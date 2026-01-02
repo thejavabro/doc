@@ -1,0 +1,24 @@
+VALIDATION_RULE
+(
+  RULE_TYPE     VARCHAR2(50),
+  ACTION_TYPE   VARCHAR2(20),
+  CONFIG_JSON   CLOB,
+  STATUS        VARCHAR2(10)
+)
+
+
+
+{
+  "mandatoryPaths": [
+    "entity.entityId"
+  ],
+  "relationshipTypeRules": {
+    "allowedTypes": [
+      "BUS_RULE_PRIMARY_DE",
+      "BUS_RULE_SECONDARY_DE"
+    ],
+    "requiredTypes": [
+      "BUS_RULE_PRIMARY_DE"
+    ]
+  }
+}
