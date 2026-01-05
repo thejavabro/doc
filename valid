@@ -12,29 +12,71 @@ validation/
 public class ValidationContext {
 
     private final UdpPersistenceRequest request;
+    private final DataSet dataSet;
+    private final Entity entity;
     private final ActionCode actionCode;
     private final MetadataRecordType ruleType;
-    private final Entity entity;
 
-    public ValidationContext(UdpPersistenceRequest request) {
+    public ValidationContext(UdpPersistenceRequest request,
+                             DataSet dataSet,
+                             Entity entity) {
+
         this.request = request;
+        this.dataSet = dataSet;
+        this.entity = entity;
 
         this.actionCode =
             ActionCode.valueOf(request.getActionCode());
 
-        this.entity =
-            request.getDataSets().get(0)
-                   .getEntities().get(0);
-
         this.ruleType =
-            MetadataRecordType.valueOf(
-                entity.getMetadataRecordType());
+            MetadataRecordType.valueOf(entity.getMetadataRecordType());
     }
 
     public UdpPersistenceRequest request() { return request; }
+    public DataSet dataSet() { return dataSet; }
+    public Entity entity() { return entity; }
     public ActionCode action() { return actionCode; }
     public MetadataRecordType ruleType() { return ruleType; }
-    public Entity entity() { return entity; }
+}
+
+public class ValidationService {
+
+    private final List<ValidationRule> rules;
+
+    public ValidationService(EntityRepository repository) {
+        this.rules = List.of(
+            new GlobalEntityValidator(),
+            new ActionBasedValidator(),
+            new EntityRelationshipValidator(),
+            new IdentityValidator(),
+            new EntityNameUniquenessValidator(repository)
+        );
+    }
+
+    public void validateUdpPersistenceRequestValues(
+            UdpPersistenceRequest request) {
+
+        // global validation that applies once per request
+        validateGlobalRequestLevel(request);
+
+        for (DataSet dataSet : request.getDataSets()) {
+            for (Entity entity : dataSet.getEntities()) {
+
+                ValidationContext ctx =
+                    new ValidationContext(request, dataSet, entity);
+
+                for (ValidationRule rule : rules) {
+                    rule.validate(ctx);
+                }
+            }
+        }
+    }
+
+    private void validateGlobalRequestLevel(UdpPersistenceRequest request) {
+        if (request.getActionCode() == null) {
+            throw new ValidationException("actionCode is mandatory");
+        }
+    }
 }
 
 
