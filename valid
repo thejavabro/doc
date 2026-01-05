@@ -41,36 +41,47 @@ public class ValidationContext {
 
 public class ValidationService {
 
-    private final List<ValidationRule> rules;
+    private final List<ValidationConstraint> entityConstraints;
+    private final List<ValidationConstraint> requestConstraints;
 
-    public ValidationService(EntityRepository repository) {
-        this.rules = List.of(
-            new GlobalEntityValidator(),
-            new ActionBasedValidator(),
-            new EntityRelationshipValidator(),
-            new IdentityValidator(),
-            new EntityNameUniquenessValidator(repository)
+    public ValidationService() {
+        this.requestConstraints = List.of(
+            new EntityNameUniquenessConstraint(),
+            new IdentityConstraint()
+        );
+
+        this.entityConstraints = List.of(
+            new GlobalEntityConstraint(),
+            new ActionBasedConstraint(),
+            new EntityRelationshipConstraint()
         );
     }
 
     public void validateUdpPersistenceRequestValues(
             UdpPersistenceRequest request) {
 
-        // global validation that applies once per request
-        validateGlobalRequestLevel(request);
+        // 🔹 request-level constraints
+        ValidationContext requestCtx =
+            new ValidationContext(request, null, null);
 
+        for (ValidationConstraint c : requestConstraints) {
+            c.validate(requestCtx);
+        }
+
+        // 🔹 entity-level constraints
         for (DataSet dataSet : request.getDataSets()) {
             for (Entity entity : dataSet.getEntities()) {
 
                 ValidationContext ctx =
                     new ValidationContext(request, dataSet, entity);
 
-                for (ValidationRule rule : rules) {
-                    rule.validate(ctx);
+                for (ValidationConstraint c : entityConstraints) {
+                    c.validate(ctx);
                 }
             }
         }
     }
+}
 
     private void validateGlobalRequestLevel(UdpPersistenceRequest request) {
         if (request.getActionCode() == null) {
@@ -189,24 +200,35 @@ public class IdentityXorRule implements ValidationRule {
 
 
 
-public class EntityNameUniquenessRule implements ValidationRule {
-
-    private final EntityRepository repository;
-
-    public EntityNameUniquenessRule(EntityRepository repository) {
-        this.repository = repository;
-    }
+public class EntityNameUniquenessConstraint
+        implements ValidationConstraint {
 
     @Override
     public void validate(ValidationContext ctx) {
-        if (repository.existsByEntityName(
-                ctx.entity().getEntityName())) {
-            throw new ValidationException(
-                "Duplicate entityName not allowed");
+
+        UdpPersistenceRequest request = ctx.request();
+
+        Set<String> seenNames = new HashSet<>();
+
+        for (DataSet dataSet : request.getDataSets()) {
+            for (Entity entity : dataSet.getEntities()) {
+
+                String entityName = entity.getEntityName();
+
+                if (entityName == null) {
+                    // entityName mandatory is validated elsewhere
+                    continue;
+                }
+
+                if (!seenNames.add(entityName)) {
+                    throw new ValidationException(
+                        "Duplicate entityName found in request: " + entityName
+                    );
+                }
+            }
         }
     }
 }
-
 
 
 
