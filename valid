@@ -1,0 +1,201 @@
+import com.jayway.jsonpath.JsonPath;
+import com.fasterxml.jackson.databind.JsonNode;
+
+public final class JsonPathUtil {
+
+    private JsonPathUtil() {}
+
+    public static boolean exists(JsonNode root, String path) {
+        try {
+            var result = JsonPath.read(root.toString(), "$." + path);
+            return result != null &&
+                   (!(result instanceof java.util.List<?> list) || !list.isEmpty());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+}
+
+
+mport java.util.List;
+
+public final class MandatoryFields {
+
+    private MandatoryFields() {}
+
+    // Common for all
+    public static final List<String> COMMON = List.of(
+        "entity.entityType",
+        "entity.entityDescription"
+    );
+
+    // Insert (shared across rule types)
+    public static final List<String> INSERT_BASE = List.of(
+        "entity.entityName",
+        "entity.status"
+    );
+
+    // Update (extra over insert)
+    public static final List<String> UPDATE_EXTRA = List.of(
+        "entity.id"
+    );
+
+    // Rule-type specific
+    public static final List<String> BUSINESS_EXTRA = List.of(
+        "entity.businessMetadata"
+    );
+
+    public static final List<String> TECHNICAL_EXTRA = List.of(
+        "entity.technicalMetadata"
+    );
+}
+
+
+
+  import java.util.ArrayList;
+import java.util.List;
+
+public class MandatoryFieldResolver {
+
+    public List<String> resolve(RuleType ruleType, ActionType actionType) {
+
+        List<String> mandatory = new ArrayList<>();
+
+        // 1️⃣ Always required
+        mandatory.addAll(MandatoryFields.COMMON);
+
+        // 2️⃣ Action-based
+        if (actionType == ActionType.INSERT) {
+            mandatory.addAll(MandatoryFields.INSERT_BASE);
+        }
+
+        if (actionType == ActionType.UPDATE) {
+            mandatory.addAll(MandatoryFields.INSERT_BASE);
+            mandatory.addAll(MandatoryFields.UPDATE_EXTRA);
+        }
+
+        // 3️⃣ Rule-type-based
+        switch (ruleType) {
+            case BUSINESS -> mandatory.addAll(MandatoryFields.BUSINESS_EXTRA);
+            case TECHNICAL -> mandatory.addAll(MandatoryFields.TECHNICAL_EXTRA);
+            case LOGICAL -> { /* no extras */ }
+        }
+
+        return mandatory;
+    }
+}
+
+
+              public enum PresenceRule {
+    MUST_EXIST,
+    MUST_NOT_EXIST
+}
+
+
+
+              public record FieldConstraint(
+        String jsonPath,
+        PresenceRule rule
+) {}
+
+
+
+import java.util.List;
+
+public final class ActionConstraints {
+
+    private ActionConstraints() {}
+
+    public static final List<FieldConstraint> INSERT = List.of(
+        new FieldConstraint("entity.id", PresenceRule.MUST_NOT_EXIST)
+    );
+
+    public static final List<FieldConstraint> UPDATE = List.of(
+        new FieldConstraint("entity.id", PresenceRule.MUST_EXIST)
+    );
+}             
+
+
+
+
+
+  import com.fasterxml.jackson.databind.JsonNode;
+import java.util.ArrayList;
+import java.util.List;
+
+public class RequestValidator {
+
+    private final MandatoryFieldResolver resolver = new MandatoryFieldResolver();
+
+    public void validate(JsonNode request,
+                         RuleType ruleType,
+                         ActionType actionType) {
+
+        List<String> errors = new ArrayList<>();
+
+        // 1️⃣ Mandatory fields
+        List<String> mandatoryPaths =
+                resolver.resolve(ruleType, actionType);
+
+        for (String path : mandatoryPaths) {
+            if (!JsonPathUtil.exists(request, path)) {
+                errors.add("Missing mandatory field: " + path);
+            }
+        }
+
+        // 2️⃣ Action-based constraints
+        List<FieldConstraint> constraints =
+                actionType == ActionType.INSERT
+                        ? ActionConstraints.INSERT
+                        : ActionConstraints.UPDATE;
+
+        for (FieldConstraint constraint : constraints) {
+            boolean exists = JsonPathUtil.exists(request, constraint.jsonPath());
+
+            if (constraint.rule() == PresenceRule.MUST_EXIST && !exists) {
+                errors.add(constraint.jsonPath() + " must be present");
+            }
+
+            if (constraint.rule() == PresenceRule.MUST_NOT_EXIST && exists) {
+                errors.add(constraint.jsonPath() + " must NOT be present");
+            }
+        }
+
+        if (!errors.isEmpty()) {
+            throw new ValidationException(errors.toString());
+        }
+    }
+}
+
+
+
+
+                                          import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/rules")
+public class RuleController {
+
+    private final RequestValidator validator = new RequestValidator();
+    private final ObjectMapper objectMapper;
+
+    public RuleController(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
+
+    @PostMapping("/business/insert")
+    public String createBusinessRule(@RequestBody JsonNode request) {
+
+        // 1️⃣ Business validation (mandatory + constraints)
+        validator.validate(request, RuleType.BUSINESS, ActionType.INSERT);
+
+        // 2️⃣ Structural validation (Jackson)
+        RuleRequest dto =
+                objectMapper.treeToValue(request, RuleRequest.class);
+
+        // 3️⃣ Process
+        return "SUCCESS";
+    }
+                                       
