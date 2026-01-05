@@ -273,12 +273,17 @@ public UdpPersistenceResponse smartPersist(
 
 
 
-  public ValidationContext(UdpPersistenceRequest request,
-                             DataSet dataSet,
+public class ValidationContext {
+
+    private final UdpPersistenceRequest request;
+    private final Entity entity;
+    private final ActionCode actionCode;
+    private final MetadataRecordType ruleType;
+
+    public ValidationContext(UdpPersistenceRequest request,
                              Entity entity) {
 
         this.request = request;
-        this.dataSet = dataSet;
         this.entity = entity;
 
         this.actionCode = resolveActionCode(request.getActionCode());
@@ -297,7 +302,7 @@ public UdpPersistenceResponse smartPersist(
             return ActionCode.valueOf(value);
         } catch (IllegalArgumentException ex) {
             throw new ValidationException(
-                "Invalid actionCode. Allowed values are INSERT or UPDATE"
+                "Invalid actionCode. Allowed values: INSERT, UPDATE"
             );
         }
     }
@@ -315,8 +320,55 @@ public UdpPersistenceResponse smartPersist(
         }
     }
 
+    public UdpPersistenceRequest request() { return request; }
+    public Entity entity() { return entity; }
     public ActionCode action() { return actionCode; }
     public MetadataRecordType ruleType() { return ruleType; }
-    public Entity entity() { return entity; }
-    public UdpPersistenceRequest request() { return request; }
 }
+
+
+
+public class ValidationService {
+
+    private final List<ValidationConstraint> requestConstraints;
+    private final List<ValidationConstraint> entityConstraints;
+
+    public ValidationService() {
+        this.requestConstraints = List.of(
+            new IdentityConstraint(),
+            new EntityNameUniquenessConstraint()
+        );
+
+        this.entityConstraints = List.of(
+            new GlobalEntityConstraint(),
+            new ActionBasedConstraint(),
+            new EntityRelationshipConstraint()
+        );
+    }
+
+    public void validateUdpPersistenceRequestValues(
+            UdpPersistenceRequest request) {
+
+        // Request-level constraints
+        ValidationContext requestCtx =
+            new ValidationContext(request, null);
+
+        for (ValidationConstraint c : requestConstraints) {
+            c.validate(requestCtx);
+        }
+
+        // Entity-level constraints
+        for (DataSet ds : request.getDataSets()) {
+            for (Entity entity : ds.getEntities()) {
+
+                ValidationContext ctx =
+                    new ValidationContext(request, entity);
+
+                for (ValidationConstraint c : entityConstraints) {
+                    c.validate(ctx);
+                }
+            }
+        }
+    }
+}
+
