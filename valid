@@ -1,201 +1,205 @@
-import com.jayway.jsonpath.JsonPath;
-import com.fasterxml.jackson.databind.JsonNode;
+validation/
+ ├── ValidationService.java
+ ├── ValidationContext.java
+ ├── ValidationRule.java
+ ├── rules/
+ │    ├── GlobalEntityRule.java
+ │    ├── ActionBasedRule.java
+ │    ├── EntityRelationshipRule.java
+ │    ├── IdentityXorRule.java
+ │    └── EntityNameUniquenessRule.java
 
-public final class JsonPathUtil {
+public class ValidationContext {
 
-    private JsonPathUtil() {}
+    private final UdpPersistenceRequest request;
+    private final ActionCode actionCode;
+    private final MetadataRecordType ruleType;
+    private final Entity entity;
 
-    public static boolean exists(JsonNode root, String path) {
-        try {
-            var result = JsonPath.read(root.toString(), "$." + path);
-            return result != null &&
-                   (!(result instanceof java.util.List<?> list) || !list.isEmpty());
-        } catch (Exception e) {
-            return false;
-        }
+    public ValidationContext(UdpPersistenceRequest request) {
+        this.request = request;
+
+        this.actionCode =
+            ActionCode.valueOf(request.getActionCode());
+
+        this.entity =
+            request.getDataSets().get(0)
+                   .getEntities().get(0);
+
+        this.ruleType =
+            MetadataRecordType.valueOf(
+                entity.getMetadataRecordType());
     }
+
+    public UdpPersistenceRequest request() { return request; }
+    public ActionCode action() { return actionCode; }
+    public MetadataRecordType ruleType() { return ruleType; }
+    public Entity entity() { return entity; }
 }
 
 
-mport java.util.List;
-
-public final class MandatoryFields {
-
-    private MandatoryFields() {}
-
-    // Common for all
-    public static final List<String> COMMON = List.of(
-        "entity.entityType",
-        "entity.entityDescription"
-    );
-
-    // Insert (shared across rule types)
-    public static final List<String> INSERT_BASE = List.of(
-        "entity.entityName",
-        "entity.status"
-    );
-
-    // Update (extra over insert)
-    public static final List<String> UPDATE_EXTRA = List.of(
-        "entity.id"
-    );
-
-    // Rule-type specific
-    public static final List<String> BUSINESS_EXTRA = List.of(
-        "entity.businessMetadata"
-    );
-
-    public static final List<String> TECHNICAL_EXTRA = List.of(
-        "entity.technicalMetadata"
-    );
+public interface ValidationRule {
+    void validate(ValidationContext ctx);
 }
 
+public class GlobalEntityRule implements ValidationRule {
 
+    @Override
+    public void validate(ValidationContext ctx) {
 
-  import java.util.ArrayList;
-import java.util.List;
+        Entity e = ctx.entity();
 
-public class MandatoryFieldResolver {
-
-    public List<String> resolve(RuleType ruleType, ActionType actionType) {
-
-        List<String> mandatory = new ArrayList<>();
-
-        // 1️⃣ Always required
-        mandatory.addAll(MandatoryFields.COMMON);
-
-        // 2️⃣ Action-based
-        if (actionType == ActionType.INSERT) {
-            mandatory.addAll(MandatoryFields.INSERT_BASE);
-        }
-
-        if (actionType == ActionType.UPDATE) {
-            mandatory.addAll(MandatoryFields.INSERT_BASE);
-            mandatory.addAll(MandatoryFields.UPDATE_EXTRA);
-        }
-
-        // 3️⃣ Rule-type-based
-        switch (ruleType) {
-            case BUSINESS -> mandatory.addAll(MandatoryFields.BUSINESS_EXTRA);
-            case TECHNICAL -> mandatory.addAll(MandatoryFields.TECHNICAL_EXTRA);
-            case LOGICAL -> { /* no extras */ }
-        }
-
-        return mandatory;
+        require(e.getEntityName(), "entityName");
+        require(e.getEntityType(), "entityType");
+        require(e.getMetadataRecordType(), "metadataRecordType");
+        require(e.getMetadataStatusCd(), "metadataStatusCd");
+        require(e.getEntityDescription(), "entityDescription");
     }
-}
 
-
-              public enum PresenceRule {
-    MUST_EXIST,
-    MUST_NOT_EXIST
-}
-
-
-
-              public record FieldConstraint(
-        String jsonPath,
-        PresenceRule rule
-) {}
-
-
-
-import java.util.List;
-
-public final class ActionConstraints {
-
-    private ActionConstraints() {}
-
-    public static final List<FieldConstraint> INSERT = List.of(
-        new FieldConstraint("entity.id", PresenceRule.MUST_NOT_EXIST)
-    );
-
-    public static final List<FieldConstraint> UPDATE = List.of(
-        new FieldConstraint("entity.id", PresenceRule.MUST_EXIST)
-    );
-}             
-
-
-
-
-
-  import com.fasterxml.jackson.databind.JsonNode;
-import java.util.ArrayList;
-import java.util.List;
-
-public class RequestValidator {
-
-    private final MandatoryFieldResolver resolver = new MandatoryFieldResolver();
-
-    public void validate(JsonNode request,
-                         RuleType ruleType,
-                         ActionType actionType) {
-
-        List<String> errors = new ArrayList<>();
-
-        // 1️⃣ Mandatory fields
-        List<String> mandatoryPaths =
-                resolver.resolve(ruleType, actionType);
-
-        for (String path : mandatoryPaths) {
-            if (!JsonPathUtil.exists(request, path)) {
-                errors.add("Missing mandatory field: " + path);
-            }
-        }
-
-        // 2️⃣ Action-based constraints
-        List<FieldConstraint> constraints =
-                actionType == ActionType.INSERT
-                        ? ActionConstraints.INSERT
-                        : ActionConstraints.UPDATE;
-
-        for (FieldConstraint constraint : constraints) {
-            boolean exists = JsonPathUtil.exists(request, constraint.jsonPath());
-
-            if (constraint.rule() == PresenceRule.MUST_EXIST && !exists) {
-                errors.add(constraint.jsonPath() + " must be present");
-            }
-
-            if (constraint.rule() == PresenceRule.MUST_NOT_EXIST && exists) {
-                errors.add(constraint.jsonPath() + " must NOT be present");
-            }
-        }
-
-        if (!errors.isEmpty()) {
-            throw new ValidationException(errors.toString());
+    private void require(Object value, String field) {
+        if (value == null) {
+            throw new ValidationException(field + " is mandatory");
         }
     }
 }
 
 
 
+public class ActionBasedRule implements ValidationRule {
 
-                                          import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.web.bind.annotation.*;
+    @Override
+    public void validate(ValidationContext ctx) {
 
-@RestController
-@RequestMapping("/rules")
-public class RuleController {
+        Entity e = ctx.entity();
 
-    private final RequestValidator validator = new RequestValidator();
-    private final ObjectMapper objectMapper;
+        if (ctx.action() == ActionCode.INSERT) {
+            mustBeNull(e.getEntityMasterId(), "entityMasterId");
+            mustBeNull(e.getRecordId(), "recordId");
+        }
 
-    public RuleController(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
+        if (ctx.action() == ActionCode.UPDATE) {
+            require(e.getEntityMasterId(), "entityMasterId");
+            require(e.getRecordId(), "recordId");
+        }
     }
 
-    @PostMapping("/business/insert")
-    public String createBusinessRule(@RequestBody JsonNode request) {
-
-        // 1️⃣ Business validation (mandatory + constraints)
-        validator.validate(request, RuleType.BUSINESS, ActionType.INSERT);
-
-        // 2️⃣ Structural validation (Jackson)
-        RuleRequest dto =
-                objectMapper.treeToValue(request, RuleRequest.class);
-
-        // 3️⃣ Process
-        return "SUCCESS";
+    private void require(Object v, String f) {
+        if (v == null) {
+            throw new ValidationException(f + " is mandatory for UPDATE");
+        }
     }
-                                       
+
+    private void mustBeNull(Object v, String f) {
+        if (v != null) {
+            throw new ValidationException(f + " must be null for INSERT");
+        }
+    }
+}
+
+
+public class EntityRelationshipRule implements ValidationRule {
+
+    @Override
+    public void validate(ValidationContext ctx) {
+
+        Entity e = ctx.entity();
+        if (e.getEntityRelationships() == null) return;
+
+        for (EntityRelationship r : e.getEntityRelationships()) {
+            require(r.getMetadataStatusCd(), "relationship.metadataStatusCd");
+            require(r.getMetadataRecordType(), "relationship.metadataRecordType");
+            require(r.getRelationshipType(), "relationshipType");
+            require(r.getEntityType(), "relationship.entityType");
+            require(r.getToUuid(), "toUuid");
+            require(r.getToEntityMasterId(), "toEntityMasterId");
+        }
+    }
+
+    private void require(Object v, String f) {
+        if (v == null) {
+            throw new ValidationException(f + " is mandatory");
+        }
+    }
+}
+
+
+public class IdentityXorRule implements ValidationRule {
+
+    @Override
+    public void validate(ValidationContext ctx) {
+
+        User user = ctx.request().getUser();
+        AppInfo app = ctx.request().getAppInfo();
+
+        boolean hasUser =
+            user != null && user.getSoeid() != null;
+
+        boolean hasApp =
+            app != null && app.getAppId() != null;
+
+        if (hasUser == hasApp) {
+            throw new ValidationException(
+                "Exactly one of user.soeid or appInfo.appId must be present"
+            );
+        }
+    }
+}
+
+
+
+public class EntityNameUniquenessRule implements ValidationRule {
+
+    private final EntityRepository repository;
+
+    public EntityNameUniquenessRule(EntityRepository repository) {
+        this.repository = repository;
+    }
+
+    @Override
+    public void validate(ValidationContext ctx) {
+        if (repository.existsByEntityName(
+                ctx.entity().getEntityName())) {
+            throw new ValidationException(
+                "Duplicate entityName not allowed");
+        }
+    }
+}
+
+
+
+
+public class ValidationService {
+
+    private final List<ValidationRule> rules;
+
+    public ValidationService(EntityRepository repository) {
+
+        this.rules = List.of(
+            new GlobalEntityRule(),
+            new ActionBasedRule(),
+            new EntityRelationshipRule(),
+            new IdentityXorRule(),
+            new EntityNameUniquenessRule(repository)
+        );
+    }
+
+    public void validateUdpPersistenceRequestValues(
+            UdpPersistenceRequest request) {
+
+        ValidationContext ctx = new ValidationContext(request);
+
+        for (ValidationRule rule : rules) {
+            rule.validate(ctx);
+        }
+    }
+}
+
+
+@PostMapping("/udpPersist")
+public UdpPersistenceResponse smartPersist(
+        @RequestBody UdpPersistenceRequest request) {
+
+    validationService.validateUdpPersistenceRequestValues(request);
+
+    // existing flow continues
+}
