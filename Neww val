@@ -1,0 +1,247 @@
+Understood. Below is the updated, production-grade code that adds DB-backed validations for entity dimensions, while keeping everything else unchanged.
+
+This follows all constraints we agreed on:
+
+✅ Minimal change
+
+✅ Uses startup-loaded reference data
+
+✅ Reuses ReferenceDataRegistry
+
+✅ Adds one new constraint
+
+✅ No DB calls at request time
+
+✅ Fits cleanly into existing ValidationService
+
+
+
+---
+
+What is being added (precisely)
+
+You want validations like:
+
+> If entityDimension.paramName == "dataQualitySubDimension"
+then paramValue must be one of the allowed values fetched from DB
+
+
+
+This is:
+
+Entity-level
+
+Dimension-specific
+
+Conditional
+
+DB-backed
+
+
+So the correct solution is:
+
+> A new EntityValidationConstraint for entity dimensions
+
+
+
+
+---
+
+1️⃣ Reference data keys (logical contract)
+
+We will assume these keys already exist in ReferenceDataRegistry (loaded at startup via ReferenceDataLoader):
+
+dimension.dataQualitySubDimension
+dimension.accuracyCategory
+dimension.ruleTypeText
+dimension.dataQualityDimension
+
+These map to DB tables exactly the same way as entity / relationship reference data.
+
+
+---
+
+2️⃣ NEW: EntityDimensionDbBackedConstraint
+
+public class EntityDimensionDbBackedConstraint
+        implements EntityValidationConstraint {
+
+    private final ReferenceDataRegistry registry;
+
+    // Map paramName -> reference-data-key
+    private static final Map<String, String> PARAM_TO_REF_KEY =
+        Map.of(
+            "dataQualitySubDimension", "dimension.dataQualitySubDimension",
+            "accuracyCategory", "dimension.accuracyCategory",
+            "ruleTypeText", "dimension.ruleTypeText",
+            "dataQualityDimension", "dimension.dataQualityDimension"
+        );
+
+    public EntityDimensionDbBackedConstraint(
+            ReferenceDataRegistry registry) {
+        this.registry = registry;
+    }
+
+    @Override
+    public void validate(EntityValidationContext ctx) {
+
+        Entity entity = ctx.entity();
+
+        if (entity.getEntityDimensions() == null) {
+            return;
+        }
+
+        for (EntityDimension dim : entity.getEntityDimensions()) {
+
+            String paramName = dim.getParamName();
+            String paramValue = dim.getParamValue();
+
+            if (!PARAM_TO_REF_KEY.containsKey(paramName)) {
+                continue; // no DB-backed validation required
+            }
+
+            String refKey = PARAM_TO_REF_KEY.get(paramName);
+
+            Set<String> allowedValues = registry.get(refKey);
+
+            if (allowedValues == null || allowedValues.isEmpty()) {
+                throw new ValidationException(
+                    "No reference data loaded for dimension: " + paramName
+                );
+            }
+
+            if (paramValue == null || !allowedValues.contains(paramValue)) {
+                throw new ValidationException(
+                    "Invalid value '" + paramValue +
+                    "' for dimension '" + paramName +
+                    "'. Allowed values: " + allowedValues
+                );
+            }
+        }
+    }
+}
+
+Why this is correct
+
+✔ Conditional (only when paramName matches)
+
+✔ Clean separation
+
+✔ No if-else explosion
+
+✔ Easy to extend (just add to the map)
+
+✔ No changes to other constraints
+
+
+
+---
+
+3️⃣ ONE-LINE change in ValidationService
+
+This is the only change required there.
+
+this.entityConstraints = List.of(
+    new GlobalEntityConstraint(),
+    new ActionBasedConstraint(),
+    new EntityRelationshipConstraint(),
+    new DbBackedValueConstraint(referenceDataRegistry),
+    new EntityDimensionDbBackedConstraint(referenceDataRegistry) // ← NEW
+);
+
+Nothing else changes.
+
+
+---
+
+4️⃣ Reference data loading (already supported)
+
+Your existing ReferenceDataLoader simply needs additional entries like:
+
+new ReferenceQuery(
+    "dimension.dataQualitySubDimension",
+    "DC_META",
+    "DCMR_DQ_SUBDIM_REF",
+    "SUB_DIMENSION_NAME",
+    "STATUS_CODE='ACTIVE'"
+)
+
+No structural change needed.
+
+
+---
+
+5️⃣ Execution flow (end-to-end)
+
+1. Startup
+
+All reference data (entity, relationship, dimension) loaded
+
+App fails if anything is missing
+
+
+
+2. Request validation
+
+Request constraints
+
+Entity constraints
+
+global
+
+action-based
+
+relationship
+
+entity DB-backed
+
+dimension DB-backed ✅
+
+
+
+
+3. No DB calls during request
+
+
+
+
+---
+
+Why this design is solid
+
+Requirement	Met
+
+Conditional dimension validation	✅
+DB-backed	✅
+Startup-loaded	✅
+Minimal change	✅
+No breaking existing code	✅
+Easy to extend	✅
+
+
+
+---
+
+Final note
+
+If tomorrow you add 10 more dimensions, you:
+
+add reference data
+
+add 1 map entry
+
+write zero new validation logic
+
+
+That’s exactly how this should scale.
+
+If you want next:
+
+mandatory dimension rules
+
+cross-dimension validations
+
+rule-type-specific dimension checks
+
+
+Say the word.
