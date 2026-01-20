@@ -1,0 +1,92 @@
+public class EntityDimensionDbBackedConstraint
+        implements EntityValidationConstraint {
+
+    private final ReferenceDataRegistry registry;
+
+    /**
+     * paramName -> reference-data key
+     */
+    private static final Map<String, String> PARAM_TO_REF_KEY =
+        Map.of(
+            "dataQualitySubDimension", "dimension.dataQualitySubDimension",
+            "accuracyCategory",        "dimension.accuracyCategory",
+            "ruleTypeText",            "dimension.ruleTypeText",
+            "dataQualityDimension",    "dimension.dataQualityDimension"
+        );
+
+    public EntityDimensionDbBackedConstraint(
+            ReferenceDataRegistry registry) {
+        this.registry = registry;
+    }
+
+    @Override
+    public void validate(EntityValidationContext ctx) {
+
+        Entity entity = ctx.entity();
+
+        if (entity.getEntityDimensions() == null) {
+            return;
+        }
+
+        for (DcmrDimension dimension : entity.getEntityDimensions()) {
+
+            ExtractedParam extracted = extractParam(dimension);
+
+            if (extracted == null) {
+                continue; // dimension type not relevant
+            }
+
+            String paramName  = extracted.paramName();
+            String paramValue = extracted.paramValue();
+
+            if (!PARAM_TO_REF_KEY.containsKey(paramName)) {
+                continue; // no DB-backed validation required
+            }
+
+            String refKey = PARAM_TO_REF_KEY.get(paramName);
+
+            Set<String> allowedValues = registry.get(refKey);
+
+            if (allowedValues == null || allowedValues.isEmpty()) {
+                throw new ValidationException(
+                    "Reference data not loaded for dimension: " + paramName
+                );
+            }
+
+            if (paramValue == null || !allowedValues.contains(paramValue)) {
+                throw new ValidationException(
+                    "Invalid value '" + paramValue +
+                    "' for dimension '" + paramName +
+                    "'. Allowed values: " + allowedValues
+                );
+            }
+        }
+    }
+
+    /**
+     * Normalizes extraction across dimension subtypes
+     */
+    private ExtractedParam extractParam(DcmrDimension dimension) {
+
+        if (dimension instanceof DcmrControlledParameter cp) {
+            return new ExtractedParam(
+                cp.getParamName(),
+                cp.getParamValue()
+            );
+        }
+
+        if (dimension instanceof DcmrNumericParameter np) {
+            return new ExtractedParam(
+                np.getParamName(),
+                String.valueOf(np.getNumericValue())
+            );
+        }
+
+        return null; // not a dimension we validate
+    }
+
+    /**
+     * Simple value object
+     */
+    private record ExtractedParam(String paramName, String paramValue) {}
+}
