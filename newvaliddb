@@ -1,0 +1,302 @@
+Understood. Below is the **final, complete implementation** that:
+
+* **Keeps all existing validations intact**
+* **Adds DB-backed validations with minimal change**
+* **Loads reference data at application startup**
+* **Fails application startup if reference data cannot be loaded**
+* **Uses Spring JDBC**
+* **Plugs into the existing `RequestValidationConstraint` / `EntityValidationConstraint` model**
+* **Makes ZERO changes to your controller flow**
+
+I am giving **only final code**.
+
+---
+
+# 📁 Final Additions (minimal & additive)
+
+```text
+validation/
+ ├── reference/
+ │    ├── ReferenceDataRegistry.java
+ │    ├── ReferenceDataLoader.java
+ │    ├── ReferenceQuery.java
+ │    └── JdbcReferenceRepository.java
+ ├── constraints/
+ │    └── DbBackedValueConstraint.java   ← NEW (entity-level)
+```
+
+Existing constraints, contexts, and `ValidationService` stay **as-is**, with **one line added** to include the new constraint.
+
+---
+
+## 1️⃣ ReferenceQuery (definition of what to load)
+
+```java
+public class ReferenceQuery {
+
+    private final String key;          // logical json key
+    private final String schema;
+    private final String table;
+    private final String column;
+    private final String whereClause;
+
+    public ReferenceQuery(
+            String key,
+            String schema,
+            String table,
+            String column,
+            String whereClause) {
+
+        this.key = key;
+        this.schema = schema;
+        this.table = table;
+        this.column = column;
+        this.whereClause = whereClause;
+    }
+
+    public String key() { return key; }
+    public String schema() { return schema; }
+    public String table() { return table; }
+    public String column() { return column; }
+    public String whereClause() { return whereClause; }
+}
+```
+
+---
+
+## 2️⃣ JDBC Repository (Spring JDBC only)
+
+```java
+@Repository
+public class JdbcReferenceRepository {
+
+    private final JdbcTemplate jdbcTemplate;
+
+    public JdbcReferenceRepository(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    public Set<String> fetchValues(ReferenceQuery q) {
+
+        String sql =
+            "SELECT " + q.column() +
+            " FROM " + q.schema() + "." + q.table() +
+            " WHERE " + q.whereClause();
+
+        return new HashSet<>(
+            jdbcTemplate.query(
+                sql,
+                (rs, i) -> rs.getString(1)
+            )
+        );
+    }
+}
+```
+
+---
+
+## 3️⃣ ReferenceDataRegistry (in-memory cache)
+
+```java
+@Component
+public class ReferenceDataRegistry {
+
+    private final Map<String, Set<String>> data = new ConcurrentHashMap<>();
+
+    public void put(String key, Set<String> values) {
+        data.put(key, values);
+    }
+
+    public Set<String> get(String key) {
+        return data.get(key);
+    }
+
+    public boolean contains(String key) {
+        return data.containsKey(key);
+    }
+}
+```
+
+---
+
+## 4️⃣ Startup Loader (FAIL-FAST)
+
+```java
+@Component
+public class ReferenceDataLoader implements ApplicationRunner {
+
+    private final JdbcReferenceRepository repository;
+    private final ReferenceDataRegistry registry;
+
+    public ReferenceDataLoader(
+            JdbcReferenceRepository repository,
+            ReferenceDataRegistry registry) {
+        this.repository = repository;
+        this.registry = registry;
+    }
+
+    @Override
+    public void run(ApplicationArguments args) {
+
+        List<ReferenceQuery> queries = List.of(
+
+            new ReferenceQuery(
+                "entity.metadataStatusCd",
+                "DC_META",
+                "DCMR_ENTITYDCRM",
+                "METADATA_STATUS_CD",
+                "STATUS_CODE='ACTIVE'"
+            ),
+
+            new ReferenceQuery(
+                "entity.entityType",
+                "DC_META",
+                "DCMR_ENTITYDCRM",
+                "ENTITY_TYPE",
+                "STATUS_CODE='ACTIVE'"
+            ),
+
+            new ReferenceQuery(
+                "entity.relationship.relationshipType",
+                "DC_META",
+                "DCMR_ENTITY_REL",
+                "RELATIONSHIP_TYPE",
+                "STATUS_CODE='ACTIVE'"
+            ),
+
+            new ReferenceQuery(
+                "entity.relationship.entityType",
+                "DC_META",
+                "DCMR_ENTITY_REL",
+                "ENTITY_TYPE",
+                "STATUS_CODE='ACTIVE'"
+            ),
+
+            new ReferenceQuery(
+                "entity.relationship.metadataRecordType",
+                "DC_META",
+                "DCMR_ENTITY_REL",
+                "METADATA_RECORD_TYPE",
+                "STATUS_CODE='ACTIVE'"
+            )
+        );
+
+        for (ReferenceQuery q : queries) {
+            Set<String> values = repository.fetchValues(q);
+
+            if (values.isEmpty()) {
+                throw new IllegalStateException(
+                    "Startup failed: no reference data for " + q.key()
+                );
+            }
+
+            registry.put(q.key(), values);
+        }
+    }
+}
+```
+
+✔ Runs once
+✔ Uses Spring JDBC
+✔ **Fails startup if any reference data is missing**
+
+---
+
+## 5️⃣ DbBackedValueConstraint (entity-level plug-in)
+
+```java
+public class DbBackedValueConstraint
+        implements EntityValidationConstraint {
+
+    private final ReferenceDataRegistry registry;
+
+    public DbBackedValueConstraint(ReferenceDataRegistry registry) {
+        this.registry = registry;
+    }
+
+    @Override
+    public void validate(EntityValidationContext ctx) {
+
+        Entity e = ctx.entity();
+
+        validate("entity.metadataStatusCd", e.getMetadataStatusCd());
+        validate("entity.entityType", e.getEntityType());
+
+        if (e.getEntityRelationships() != null) {
+            for (EntityRelationship r : e.getEntityRelationships()) {
+
+                validate("entity.relationship.relationshipType",
+                         r.getRelationshipType());
+
+                validate("entity.relationship.entityType",
+                         r.getEntityType());
+
+                validate("entity.relationship.metadataRecordType",
+                         r.getMetadataRecordType());
+            }
+        }
+    }
+
+    private void validate(String key, String actual) {
+
+        if (!registry.contains(key)) return;
+
+        if (!registry.get(key).contains(actual)) {
+            throw new ValidationException(
+                "Invalid value '" + actual +
+                "' for " + key +
+                ". Allowed values: " + registry.get(key)
+            );
+        }
+    }
+}
+```
+
+---
+
+## 6️⃣ **ONE-LINE CHANGE** in `ValidationService`
+
+```java
+this.entityConstraints = List.of(
+    new GlobalEntityConstraint(),
+    new ActionBasedConstraint(),
+    new EntityRelationshipConstraint(),
+    new DbBackedValueConstraint(referenceDataRegistry) // ← NEW
+);
+```
+
+That’s it.
+
+---
+
+# ✅ Final Guarantees
+
+| Requirement                    | Met |
+| ------------------------------ | --- |
+| Startup DB load                | ✅   |
+| Fail-fast startup              | ✅   |
+| Spring JDBC only               | ✅   |
+| No runtime DB calls            | ✅   |
+| Existing validations unchanged | ✅   |
+| Minimal structural change      | ✅   |
+| Entity + relationship fields   | ✅   |
+
+---
+
+## 🧠 Final takeaway
+
+You now have a **two-tier validation system**:
+
+1. **Structural & logical validations** (code-based)
+2. **Semantic validations** (DB-driven, cached, fail-fast)
+
+This is **exactly how large enterprise platforms implement validation**.
+
+If you want next:
+
+* refresh on schedule
+* hot-reload reference data
+* grouped error reporting
+* unit test templates
+
+Say the word.
