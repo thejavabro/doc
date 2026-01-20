@@ -1,0 +1,110 @@
+Certainly. I’ll explain **each class in the `reference` directory and their roles** very clearly and directly.
+
+---
+
+## 📁 Reference Directory Overview
+
+This directory is dedicated to handling **reference data loading and storage**. The classes here are purely about fetching, caching, and providing reference values from the database that we then use in validation.
+
+---
+
+## 1️⃣ ReferenceQuery
+
+### Role:
+
+A **simple data holder** that represents one piece of the configuration for fetching allowed values from the database.
+
+### What it does:
+
+* It stores the details needed to query the DB:
+
+  * Which `schema`
+  * Which `table`
+  * Which `column`
+  * What `whereClause` to apply
+  * The logical `key` that we use to identify the data in our code.
+
+In short, it’s a configuration object that says, “Here’s how to get the allowed values for a certain JSON field from the database.”
+
+---
+
+## 2️⃣ JdbcReferenceRepository
+
+### Role:
+
+A **Spring JDBC component** that actually **executes the SQL queries** to fetch reference data from the database.
+
+### What it does:
+
+* It takes a `ReferenceQuery` and runs the corresponding SQL query using `JdbcTemplate`.
+* It returns a `Set<String>` of allowed values.
+
+In other words, it’s the piece that knows how to talk to the database and fetch the allowed values at runtime.
+
+---
+
+## 3️⃣ ReferenceDataRegistry
+
+### Role:
+
+An **in-memory cache** that holds all the reference data once it’s loaded.
+
+### What it does:
+
+* It provides a simple `put()` method to store allowed values by key.
+* It provides a `get()` method to retrieve allowed values by key during validation.
+
+Think of it as a **map** that stores “allowed values for each field” in memory, so we don’t have to hit the database again after startup.
+
+---
+
+## 4️⃣ ReferenceDataLoader
+
+### Role:
+
+A **startup-time component** that runs once when the application starts, fetches all reference data from the database, and populates the `ReferenceDataRegistry`.
+
+### What it does:
+
+* Implements `ApplicationRunner` so it runs after the Spring context is ready.
+* Uses `JdbcReferenceRepository` to load all required data.
+* Fails the application startup if any reference data is missing.
+* Puts all the loaded data into `ReferenceDataRegistry`.
+
+In other words, this class ensures that when your app is up, all reference data is preloaded and ready.
+
+---
+
+## Summary
+
+* `ReferenceQuery`: Defines how to fetch a specific piece of reference data.
+* `JdbcReferenceRepository`: Executes SQL queries to get allowed values.
+* `ReferenceDataRegistry`: Holds the fetched data in memory.
+* `ReferenceDataLoader`: Loads all reference data at startup and fails fast if any data is missing.
+
+---
+
+## How they all fit together
+
+At runtime:
+
+1. **Startup**: `ReferenceDataLoader` runs, fetches data using `JdbcReferenceRepository`, and stores it in `ReferenceDataRegistry`.
+2. **Validation**: The `DbBackedValueConstraint` reads from `ReferenceDataRegistry` instead of going to the database.
+
+This ensures your existing validation framework stays the same, and we just add a new constraint that leverages this preloaded data.
+
+---
+
+If you have more adjustments or questions, just let me know.
+
+
+
+
+---------------------   caching -------------------------------------------
+
+
+We’re using a simple in-memory caching approach. Specifically, we’re using a `ConcurrentHashMap` inside the `ReferenceDataRegistry` to store and cache the reference data once it’s loaded at startup.
+
+In other words, the caching mechanism is simply an in-memory map that holds the allowed values. Once the data is fetched from the database at application startup, it’s stored in this `ConcurrentHashMap` so that all validation logic can read from memory without making any additional database calls.
+
+This makes the validation fast and ensures that we only depend on the database at startup.
