@@ -1,0 +1,300 @@
+Perfect — this clarifies the requirement precisely, and it fits very cleanly into the architecture we already built.
+
+I’ll do three things, in order:
+
+1. Restate the requirement in exact technical terms (authoritative)
+
+
+2. Explain where this validation belongs (so you see why nothing breaks)
+
+
+3. Give you the updated, correct code (only what needs to change / be added)
+
+
+
+No hand-waving.
+
+
+---
+
+1️⃣ Final, corrected requirement (no ambiguity)
+
+From your JSON + model:
+
+entityDimensions is an array of polymorphic objects
+
+One subtype is DcmrControlledParameter
+
+For DcmrControlledParameter only:
+
+paramName must be one of the allowed values
+
+Allowed values come from DB reference tables
+
+Data is loaded at startup and cached in ReferenceDataRegistry
+
+
+Other dimension subtypes are not affected by this rule
+
+
+So this is:
+
+> Subtype-specific, DB-backed, value validation on paramName
+
+
+
+This is not:
+
+mandatory check
+
+request-level validation
+
+relationship validation
+
+
+It is entity-dimension–level semantic validation.
+
+
+---
+
+2️⃣ Where this validation belongs (important)
+
+This validation belongs exactly here:
+
+EntityValidationConstraint
+ └── EntityDimensionDbBackedConstraint
+
+Why?
+
+Scope: entity
+
+Target: entityDimensions
+
+Nature: semantic / allowed-values
+
+Dependency: ReferenceDataRegistry
+
+
+So:
+
+❌ No change to ValidationService
+
+❌ No change to startup loader design
+
+❌ No new framework
+
+✅ Just extend the existing dimension constraint
+
+
+
+---
+
+3️⃣ Updated code (correct, minimal, production-grade)
+
+We will extend the existing EntityDimensionDbBackedConstraint to validate both:
+
+paramValue (already implemented earlier)
+
+AND NOW paramName (new requirement)
+
+
+3.1 Reference data keys (contract)
+
+These keys must already be loaded at startup:
+
+dimension.controlledParameter.allowedParamNames
+dimension.dataQualitySubDimension
+dimension.accuracyCategory
+dimension.ruleTypeText
+dimension.dataQualityDimension
+
+
+---
+
+3.2 FINAL EntityDimensionDbBackedConstraint (UPDATED)
+
+public class EntityDimensionDbBackedConstraint
+        implements EntityValidationConstraint {
+
+    private final ReferenceDataRegistry registry;
+
+    /**
+     * paramName -> reference-data key (for paramValue validation)
+     */
+    private static final Map<String, String> PARAM_VALUE_REF_KEYS =
+        Map.of(
+            "dataQualitySubDimension", "dimension.dataQualitySubDimension",
+            "accuracyCategory",        "dimension.accuracyCategory",
+            "ruleTypeText",            "dimension.ruleTypeText",
+            "dataQualityDimension",    "dimension.dataQualityDimension"
+        );
+
+    /**
+     * Reference-data key for allowed paramNames of controlled parameters
+     */
+    private static final String CONTROLLED_PARAM_NAME_KEY =
+        "dimension.controlledParameter.allowedParamNames";
+
+    public EntityDimensionDbBackedConstraint(
+            ReferenceDataRegistry registry) {
+        this.registry = registry;
+    }
+
+    @Override
+    public void validate(EntityValidationContext ctx) {
+
+        Entity entity = ctx.entity();
+
+        if (entity.getEntityDimensions() == null) {
+            return;
+        }
+
+        for (DcmrDimension dimension : entity.getEntityDimensions()) {
+
+            if (!(dimension instanceof DcmrControlledParameter cp)) {
+                continue;
+            }
+
+            validateControlledParameter(cp);
+        }
+    }
+
+    private void validateControlledParameter(
+            DcmrControlledParameter param) {
+
+        String paramName  = param.getParamName();
+        String paramValue = param.getParamValue();
+
+        // -----------------------------
+        // 1️⃣ Validate paramName (NEW)
+        // -----------------------------
+        Set<String> allowedParamNames =
+                registry.get(CONTROLLED_PARAM_NAME_KEY);
+
+        if (allowedParamNames == null || allowedParamNames.isEmpty()) {
+            throw new ValidationException(
+                "Reference data not loaded for controlled parameter names"
+            );
+        }
+
+        if (paramName == null || !allowedParamNames.contains(paramName)) {
+            throw new ValidationException(
+                "Invalid controlled parameter name '" + paramName +
+                "'. Allowed values: " + allowedParamNames
+            );
+        }
+
+        // ----------------------------------
+        // 2️⃣ Validate paramValue (existing)
+        // ----------------------------------
+        if (!PARAM_VALUE_REF_KEYS.containsKey(paramName)) {
+            return; // paramValue validation not required for this paramName
+        }
+
+        String refKey = PARAM_VALUE_REF_KEYS.get(paramName);
+
+        Set<String> allowedValues = registry.get(refKey);
+
+        if (allowedValues == null || allowedValues.isEmpty()) {
+            throw new ValidationException(
+                "Reference data not loaded for dimension value: " + paramName
+            );
+        }
+
+        if (paramValue == null || !allowedValues.contains(paramValue)) {
+            throw new ValidationException(
+                "Invalid value '" + paramValue +
+                "' for dimension '" + paramName +
+                "'. Allowed values: " + allowedValues
+            );
+        }
+    }
+}
+
+
+---
+
+4️⃣ What changed vs earlier version (explicit)
+
+Aspect	Earlier	Now
+
+paramValue DB validation	✅	✅
+paramName DB validation	❌	✅
+Scope	ControlledParameter	ControlledParameter
+Startup-loaded data	✅	✅
+ValidationService change	❌	❌
+
+
+Only one class changed, exactly as it should.
+
+
+---
+
+5️⃣ How this behaves on your JSON
+
+For each entityDimensions entry of type DcmrControlledParameter:
+
+1. Check:
+
+"paramName": "dataQualitySubDimension"
+
+against DB-backed allowed names
+
+
+2. Then check:
+
+"paramValue": "Accuracy"
+
+against DB-backed allowed values for that paramName
+
+
+
+Any violation → ValidationException → request rejected.
+
+
+---
+
+6️⃣ Why this is the right design
+
+No hardcoding
+
+Fully DB-driven
+
+Subtype-safe
+
+Easy to extend
+
+No regression risk
+
+No architectural compromise
+
+
+If tomorrow you add:
+
+10 more controlled parameters
+
+new allowed values
+
+
+You:
+
+update DB
+
+update startup loader config
+
+write zero new validation logic
+
+
+
+---
+
+If you want next
+
+Numeric range validation for DcmrNumericParameter
+
+Mandatory presence of certain dimensions by rule type
+
+Cross-dimension dependency validation
+
+
+Just tell me the next rule.
